@@ -1,0 +1,98 @@
+1.  DESCRIPTION
+
+The utility program PRECIS prints the labels from a tape, prints a small
+portion of each data file on the tape, and lists statistics on the
+number and size of the data blocks in each file.
+
+PRECIS is used in situations when you are in doubt about a tape's
+contents: whether or not it has standard labels, how many files it
+contains, the DSNAMEs and DCB values (RECFM-LRECL-BLKSIZE) in the
+labels, the block counts and actual block sizes of each file, and what
+the data looks like.
+
+PRECIS starts at the front of the tape and reads both labels and data,
+making no distinction between them; everything between tape marks is
+considered a "file".  Only the first 10 blocks of each file, and only
+the first 80 bytes of each block, are printed.  However, since tape
+labels are 80-byte unblocked records, that is enough to print the entire
+labels.  Data is printed in both character and hex.  Processing normally
+continues until two consecutive tape marks are read, which usually means
+the end of data on the volume (this can be overridden by a PARM; see
+below).
+
+
+2.  JCL
+
+JCL for executing PRECIS is as follows:
+
+     //jobname JOB ...
+     //stepname EXEC PGM=PRECIS   (PARM optional; see below)
+     //SYSPRINT DD SYSOUT=class
+     //VOLUME   DD DSN=dsname,DISP=OLD,UNIT=TAPE,VOL=SER=volser
+
+The program assumes a LABEL of (1,BLP), regardless of what LABEL
+parameter you code in JCL; therefore it doesn't matter what DSNAME you
+use.  If the VOLSER you code is not a TMS tape or the DSNAME does not
+match the TMC entry for that VOLSER, you will need LABEL=EXPDT=98000.
+
+
+3.  PARM INFORMATION
+
+By default, PRECIS processes all files until "end of data on the volume".
+Normally this would be two consecutive tape marks.  However, two
+consecutive tape marks might also mean an empty file, in which case
+more labels and/or data might follow.  To force PRECIS to continue past
+double tape marks, you can use a PARM to tell it to continue until a
+specified number of tape marks are read, regardless of whether some of
+them are consecutive.  The problem with this is that you might run off
+the end of the reel if the tape doesn't contain that many.  So if you
+use this PARM, you must watch the drive and cancel the job if it nears
+the end of the reel.
+
+Other PARM options provide the ability to skip a specified number of
+tape marks before starting to print, or to stop processing after a
+certain number of tape marks even if "end of data" has not yet been
+reached.  Here is the complete format of the PARM:
+
+     PARM=(n1,n2,n3,n4)
+
+       n1 = Number of tape marks to be skipped before starting to
+            print.  Default = 0.  If "end of data" or the maximum
+            value (n2) occurs first, no files are printed.
+
+       n2 = Maximum number of tape marks to be processed, i.e., quit
+            after this many even if not yet at "end of data".
+            Default = 9999999.  A value of 0 is invalid and ignored.
+
+       n3 = Minimum number of tape marks to be processed, i.e., process
+            at least this many regardless of "end of data" conditions.
+            Default = 1.  A value of 0 is invalid, and 1 is used; a
+            value greater than the maximum (n2) is invalid, and the n2
+            value is used.
+
+       n4 = Number of blocks in each file, to be hex printed for the
+            first 80 bytes.  (The default can also be set at assembly
+            time, using the GBLA variable &NR.)
+
+These are positional parameters; that is, "PARM=n" would be interpreted
+as specifying n1, "PARM=(,,n)" would specify n3, etc.
+
+
+4.  FORMAT OF TAPE LABELS
+
+The format of tape labels is described in the MVS Tape Labels manual
+(GC26-4003).  All IBM standard labels are in character (unpacked) format
+and contain the label type in the first 4 bytes.  Fields of particular
+interest include:
+
+     Volser -- 6 bytes long, starts at byte 5 of VOL1 label.
+     DSNAME -- 17 bytes long, starts at byte 5 of HDR1, EOF1, and EOV1
+        labels.  If the name is longer than 17 bytes, the field contains
+        the last 17 bytes.
+     RECFM -- Byte 5 of HDR2, EOF2, and EOV2 contains "F", "V", or "U".
+        If blocked or spanned, byte 39 contains "B", "S", or "R" (both
+        blocked and spanned).
+     BLKSIZE -- 5 bytes long, starts at byte 6 of HDR2, EOF2, and EOV2.
+     LRECL -- 5 bytes long, starts at byte 11 of HDR2, EOF2, and EOV2.
+     DEN -- Byte 16 of HDR2, EOF2, and EOV2.
+
