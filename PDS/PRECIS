@@ -1,0 +1,641 @@
+         TITLE 'PRECIS - SUMMARY OF TAPE CONTENTS'                   KK
+PRECIS   CSECT
+         SPACE 1
+* * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * *
+*                                                                     *
+*        PRECIS IS A UTILITY PROGRAM FOR LOOKING AT THE LABELS ON     *
+*        A MAGNETIC TAPE VOLUME.  THE VOLUME (ONLY) IS ALLOCATED      *
+*        BY A DD CARD NAMED 'VOLUME'.  PRECIS POSITIONS THE VOLUME    *
+*        AT LOAD POINT, AND IGNORING DATASET BOUNDARIES, READS THE    *
+*        TAPE.  PRINTED MESSAGES APPEAR FOR EACH TAPEMARK READ.       *
+*        FOLLOWING EACH TAPE MARK (ALSO FOLLOWING LOAD POINT), THE   RS
+*        FIRST FEW BLOCKS ARE PRINTED, BOTH AS CHARACTERS AND IN HEX.RS
+*        ALL SUCH BLOCKS ARE TRUNCATED TO A MAXIMUM OF 80 CHARACTERS. *
+*        PRECIS ATTEMPTS TO IGNORE ALL I/O ERRORS WITHOUT COMMENT.    *
+*                                                                     *
+*        A 'SYSPRINT' DD CARD MUST BE SUPPLIED FOR MESSAGE OUTPUT.    *
+*        DEFAULT CHARACTERISTICS FOR 'SYSPRINT' ARE  VBA,125,1632.    *
+*        ONLY BLOCKSIZE IS OVERRIDABLE ON THE DD CARD.                *
+*                                                                     *
+*        PRECIS WILL ACCEPT 4 OPTIONAL POSITIONAL PARAMETERS FROM    RS
+*        THE 'PARM' FIELD.  ALL PARAMETERS ARE DECIMAL INTEGERS:     RS
+*                                                                    KK
+*        (1) THE NUMBER OF TAPEMARKS TO BE SKIPPED BEFORE STARTING   KK
+*        TO PROCESS (DEFAULT = 0), ASSUMING THAT "END-OF-DATA" (SEE  KK
+*        BELOW) OR THE MAXIMUM NUMBER (SECOND PARAMETER) DOESN'T     KK
+*        OCCUR FIRST;                                                KK
+*        (2) THE MAXIMUM NUMBER OF TAPEMARKS TO BE PROCESSED BEFORE  KK
+*        TERMINATING (DEFAULT = X'FFFFFFFF', I.E., "ALL"; VALUE OF   KK
+*        0 IS INVALID AND TREATED AS X'FFFFFFFF');                   KK
+*        (3) THE MINIMUM NUMBER OF TAPEMARKS TO BE PROCESSED BEFORE  KK
+*        TERMINATING (DEFAULT = 1; VALUE OF 0 IS INVALID AND         KK
+*        TREATED AS 1; VALUE GREATER THAN THE MAXIMUM IS INVALID     KK
+*        AND THE MAXIMUM IS USED).  PROCESSING NORMALLY TERMINATES   KK
+*        UPON ENCOUNTERING AN "END-OF-DATA" CONDITION, DEFINED AS    KK
+*        EITHER A DOUBLE TAPEMARK OR AN IBM "EOV1" LABEL.  THE       KK
+*        THIRD PARAMETER MAY BE USED TO FORCE PRECIS TO CONTINUE     KK
+*        PAST AN EOV1 OR DOUBLE TAPEMARK--FOR EXAMPLE, IF IT IS      KK
+*        KNOWN IN ADVANCE THAT THE DOUBLE TAPEMARK IS MERELY AN      KK
+*        EMPTY FILE AND THAT ADDITIONAL DATA FOLLOWS.  HOWEVER,      KK
+*        THE USER IS THEN RESPONSIBLE FOR ENSURING THAT THE VOLUME   KK
+*        ACTUALLY CONTAINS AT LEAST AS MANY TAPEMARKS AS HE HAS      KK
+*        SPECIFIED IN THE THIRD PARAMETER, OR ELSE PRECIS WILL       KK
+*        BLITHELY RUN OFF THE END OF THE REEL.                       KK
+*        (4) THE MAXIMUM NUMBER OF BLOCKS TO BE PRINTED FROM EACH    KK
+*        FILE (DEFAULT = 10).  AGAIN, ONLY THE FIRST 80 BYTES OF     KK
+*        EACH BLOCK ARE PRINTED (OR FEWER IF THE BLOCK IS SHORTER);  KK
+*        PRECIS IS UNAWARE OF ANY LOGICAL RECORD FORMAT WITHIN THE   KK
+*        BLOCK.                                                      KK
+*        PARMS MAY BE OMITTED ENTIRELY (DEFAULTS ARE TO SKIP ZERO,   KK
+*        PROCESS ALL FILES, PROCESS AT LEAST 1 FILE, AND PRINT THE   RS
+*        FIRST 10 RECORDS OF EACH FILE), OR SPECIFIED IN ANY OF      RS
+*        THE FOLLOWING FORMS:                                        RS
+*             PARM='A,B,C,D'                                         RS
+*             PARM='A,B,C'              (D DEFAULTS)                 RS
+*             PARM='A,B,,D'             (C DEFAULTS)                 RS
+*             PARM='A,,C,D'             (B DEFAULTS)                 RS
+*             PARM='A,,C'               (B AND D DEFAULT)            RS
+*             PARM='A,,,D'              (B AND C DEFAULT)            RS
+*             PARM='A,B'                (C AND D DEFAULT)            RS
+*             PARM=A                    (B, C, AND D DEFAULT)        RS
+*             PARM=',B,C,D'             (A DEFAULTS)                 RS
+*             PARM=',B,C'               (A AND D DEFAULT)            RS
+*             PARM=',B,,D'              (A AND C DEFAULT)            RS
+*             PARM=',,C,D'              (A AND B DEFAULT)            RS
+*             PARM=',,C'                (A, B, AND D DEFAULT)        RS
+*             PARM=',,,D'               (A, B, AND C DEFAULT)        RS
+*             PARM=',B'                 (A, C, AND D DEFAULT)        RS
+*        (I THINK THAT COVERS ALL THE POSSIBILITIES.  IN SHORT,      RS
+*        THE USUAL RULES FOR POSITIONAL PARAMETERS APPLY.)  THE      RS
+*        PARM STRING MAY BE ENCLOSED IN QUOTES, PARENTHESES, OR      RS
+*        BOTH.  I'LL EVEN FORGIVE THE OMISSION OF CLOSING QUOTES OR  RS
+*        RIGHT PARENTHESES.                                          KK
+*                                                                     *
+*        RETURN CODES ARE:                                            *
+*                                                                     *
+RCSATIS  EQU   0                  OPTIONS COUNT SATISFIED             *
+RCEOV    EQU   0                  END-OF-VOLUME REACHED               *
+RCOPEN   EQU   4                  CANNOT OPEN VOLUME                  *
+RCDEV    EQU   8                  DEVICE NOT MAG TAPE                 *
+RCDD     EQU   12                 NO 'VOLUME' DD CARD                 *
+RCPARM   EQU   16                 INVALID 'PARM' FIELD                *
+RCPRT    EQU   20                 NO 'SYSPRINT' DD CARD               *
+*                                                                     *
+*        SINCE PRECIS DOES NOT ACTUALLY DISTINGUISH BETWEEN LABELS    *
+*        AND DATA, UNLABELED TAPE IS LEGAL INPUT, PROVIDED THERE IS   *
+*        A DOUBLE TAPEMARK AT END-OF-VOLUME.                          *
+*                                                                     *
+*        THIS MODULE IS SERIALLY REUSABLE.                            *
+*                                                                     *
+*        THIS VERSION OF PRECIS IS NOT BUFFERING ITS INPUT AT ALL.    *
+*        IF THE PROGRAM SEES SIGNIFICANT USAGE, THIS SHOULD BE AN     *
+*        EARLY SOPHISTICATION.                                        *
+*                                                                     *
+*                  ********************************                   *
+*                                                                     *
+*        PRECIS WAS WRITTEN BY H. C. LUDLAM FOR THE UNIVERSITY OF     *
+*        NORTH CAROLINA AT CHAPEL HILL.    DISTRIBUTION OF THIS       *
+*        PROGRAM TO OTHER INSTALLATIONS DOES NOT IMPLY ANY            *
+*        RESPONSIBILITY FOR MAINTENANCE.                              *
+*                                                                     *
+*        MODIFIED BY REED STARNES, THE COCA-COLA COMPANY, 11/11/80:  KK
+*        (1) THE ACTUAL PRINTING OF DATA OTHER THAN TAPE LABELS IS   KK
+*        BYPASSED IF THE JOB'S OWNER IS NOT ACF2 "BLP" AUTHORIZED;   KK
+*        (2) ADDED THE THIRD PARM, AND REWROTE THE PARM PARSING      KK
+*        ROUTINE;                                                    KK
+*        (3) CODED STANDARD ENTRY AND EXIT SEQUENCES INSTEAD OF      KK
+*        UNCCC'S MACROS (WHICH I DON'T HAVE);                        KK
+*        (4) USED STANDARD MACROS FOR TCB, TIOT, UCB, AND JFCB;      KK
+*        (5) A FEW VERY SMALL CHANGES TO TAKE ADVANTAGE OF 370       KK
+*        ARCHITECTURE (ICM INSTRUCTION, PSA).                        KK
+*                                                                    KK
+*        FURTHER MODIFIED BY R.STARNES 7/15/81 TO REMOVE THE ACF2    KK
+*        CHECK AND GO BACK TO PRINTING DATA ALWAYS.  THIS FOLLOWED   RS
+*        A MANAGEMENT DECISION TO RESTRICT THE USE OF PRECIS TO      RS
+*        SYSTEMS PROGRAMMERS AND OPERATIONS, ALL OF WHOM HAD BLP     RS
+*        AUTHORITY.  (PRECIS CHANGES THE TAPE'S JFCB FROM SL TO BLP  RS
+*        BEFORE OPENING, SO THE USER NEEDS BLP AUTHORITY, UNLESS     RS
+*        SPECIAL MEASURES SUCH AS ACF2'S BLPPGM LIST OR RACF'S       RS
+*        ICHBLP PROFILE ARE USED.)  I'M LEAVING THE ACF2 CODE,       RS
+*        COMMENTED OUT, IN CASE SOMEONE WANTS TO IMPLEMENT IT.  FOR  RS
+*        RACF IT WOULD NEED TO BE CONVERTED TO THE APPROPRIATE SAF   RS
+*        CALLS.                                                      RS
+*                                                                     *
+*                  ********************************                   *
+*   CHANGES:                                                          *
+*        02/11/2021 - INCREASE THE UPPER LIMIT CAPACITY OF THE        *
+*                     NUMBERS IN THE REPORT.       (SG)               *
+*                                                                     *
+*        02/22/2021 - ADDED THE FOURTH PARM.                         RS
+*                                                                    RS
+*   I WILL NOTE A CHANGE THAT HAS BEEN SUGGESTED, BUT I HAVE *NOT*   RS
+*   MADE.  IT IS NOW POSSIBLE FOR A TAPE DATA BLOCK TO EXCEED 32K    RS
+*   BYTES; HOWEVER, EXCP RATHER THAN BSAM WOULD BE REQUIRED TO       RS
+*   READ IT.  I'LL LEAVE THAT TO SOMEONE WITH MORE EXCP CODING       RS
+*   EXPERTISE THAN ME.                                               RS
+*                                                                     *
+* * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * *
+         SPACE 1                                                     KK
+         SAVE  (14,12)            NORMAL OPENING SEQUENCE,           KK
+         BALR  BR,0                REPLACING THE UNCCC               KK
+         USING *,BR                "ENTER" MACRO                     KK
+         ST    R13,SAVE+4                                            KK
+         LR    R2,R13                                                KK
+         LA    R13,SAVE                                              KK
+         ST    R13,8(,R2)                                            KK
+         MVI   RC,0               CLEAR RETURN CODE
+         L     PR,0(R1)           ADDRESS PARAMETERS
+         USING PARMS,PR
+         OPEN  (PRINTER,OUTPUT)   ATTEMPT TO OPEN PRINTOUT,
+         TM    POFLGS,X'10'        AND IF UNSUCCESSFUL,
+         BO    POPEN               EXIT WITH
+         MVI   RC,RCPRT            A RETURN CODE OF 20.
+         B     EXIT
+POPEN    EQU   *                                                     RS
+******************************************************************** KK
+*  THE FOLLOWING ACF2 CODE COMMENTED OUT BUT LEFT IN CASE WE EVER    KK
+*  WANT IT AGAIN.                           RS 7/15/81               KK
+******************************************************************** KK
+*  THE FOLLOWING MODIFICATION CHECKS TO SEE IF THE USER IS ACF2-     KK
+*  AUTHORIZED FOR BLP; IF NOT, THE ACTUAL PRINTING OF DATA OTHER     KK
+*  THAN BONA FIDE TAPE LABEL RECORDS IS BYPASSED.                    KK
+*        MVI   DATASW,C'N'        SET DEFAULT TO NOT PRINT DATA      RS
+*        ACFINCVT R2,NONE=PRTDATA  GET ACF2 CVT                      KK
+*        USING PSA,R0                                                KK
+*        USING ACCVT,R2                                              KK
+*        ACFGUCB R3,NONE=PRTDATA  GET ACF2 USER CONTROL BLOCK        KK
+*        USING ACUCB,R3                                              KK
+*        L     R4,ACULRECP        GET ACF2 LOGONID RECORD            KK
+*        USING LIDREC,R4                                             KK
+*        TM    LIDMFLG,LIDMBLP    THIS USER AUTHORIZED FOR BLP?      KK
+*        BO    SETDATA            YES--PRINT THE DATA                KK
+*        TM    USERBYTE,TMSEXPDT  THIS USER AUTHORIZED FOR 98000?    KK
+*        BO    SETDATA            YES--PRINT THE DATA                KK
+*  THAT IS THE BIT TO TEST IF WE DECIDE TO REQUIRE BOTH BLP AND      KK
+*  98000 AUTHORIZATION TO PRINT DATA.                                KK
+*        B     ENDACF2            NO--USER NOT AUTH TO PRINT DATA    RS
+*SETDATA MVI   DATASW,C'Y'        AUTHORIZE PRINTING OF DATA BLOCKS  RS
+*ENDACF2 EQU   *                                                     RS
+*        DROP  R0,R2,R3,R4        THROUGH WITH ACF2 CHAIN-CHASING    KK
+         ZAP   LNO,=P'0'
+         ZAP   PNO,=P'0'
+         MVC   EDOPT1,QUESTION
+         MVC   EDOPT2,QUESTION
+         MVC   EDVOLS,QUESTION
+         SLR   RA0,RA0            SET DEFAULT PARMS: SKIP 0 TM'S,    KK
+         LA    RA2,1               PROCESS MINIMUM = 1 TM,           KK
+         LCR   RA1,RA2             PROCESS MAXIMUM = 64K-1 TMS,      KK
+         LA    RA3,10              PRINT 10 RECORDS FROM EACH FILE   RS
+         LH    LR,PARMLNG
+         LTR   LR,LR              IF THERE ARE NO PARAMETERS,
+         BNH   SETKNTS             USE DEFAULT VALUES.
+         SLR   CR,CR              CLEAR COMMA COUNT                  KK
+         SLR   WK1,WK1            DEFAULT FIRST PARM = 0             KK
+NEXTCHAR CLI   PCHAR,C'('         SKIP PAST ANY PARENTHESES          KK
+         BE    INCR                OR QUOTES                         KK
+         CLI   PCHAR,C')'                                            KK
+         BE    INCR                                                  KK
+         CLI   PCHAR,C''''                                           KK
+         BE    INCR                                                  KK
+         CLI   PCHAR,C','         IF CHARACTER IS A COMMA,           KK
+         BE    SAVEPARM            GO STORE THE JUST-ENDED PARM.     KK
+         CLI   PCHAR,X'F0'        IF CHARACTER IS NOT NUMERIC,       KK
+         BL    PERROR              SIGNAL ERROR.                     KK
+         CLI   PCHAR,X'F9'                                           KK
+         BH    PERROR                                                KK
+         MH    WK1,=H'10'         OTHERWISE,                         KK
+         IC    R1,PCHAR           ACCUMULATE IN BINARY.              KK
+         N     R1,=A(X'F')                                           KK
+         AR    WK1,R1                                                KK
+         B     INCR               BUMP TO NEXT CHARACTER             KK
+SAVEPARM LTR   WK1,WK1            WAS PARAMETER ZERO OR OMITTED?     KK
+         BNP   COUNTIT            DON'T SAVE IT IF SO                KK
+* (ZERO IS INVALID FOR THREE OF THE PARMS AND DEFAULT FOR THE OTHER.)RS
+         LR    R15,CR             CURRENT PARAMETER COUNT MINUS 1    KK
+         SLA   R15,2              MULTIPLY BY 4                      KK
+         B     *+4(R15)           ENTER BRANCH TABLE                 KK
+         B     SETPARM1            STORE FIRST PARAMETER             KK
+         B     SETPARM2            STORE SECOND PARAMETER            KK
+         B     SETPARM3            STORE THIRD PARAMETER             KK
+         B     SETPARM4            STORE FOURTH PARAMETER            RS
+         B     PERROR              DON'T THINK THIS ONE IS POSSIBLE  KK
+SETPARM1 LR    RA0,WK1            SET FIRST PARM (SKIP)              KK
+         B     COUNTIT            BUMP PAST FIRST COMMA              KK
+SETPARM2 LR    RA1,WK1            SET SECOND PARM (PROCESS MAXIMUM)  KK
+         B     COUNTIT            BUMP PAST SECOND COMMA             KK
+SETPARM3 LR    RA2,WK1            SET THIRD PARM (PROCESS MINIMUM)   KK
+         CLR   RA2,RA1            MAKE SURE IT ISN'T GREATER THAN    KK
+         BNH   COUNTIT             SECOND PARM (PROCESS MAXIMUM).    KK
+         LR    RA2,RA1            IF SO, SET MINIMUM = MAXIMUM       KK
+         B     COUNTIT            BUMP PAST THIRD COMMA              RS
+SETPARM4 LR    RA3,WK1            SET FOURTH PARM (RECORDS TO PRINT) RS
+COUNTIT  SLR   WK1,WK1            CLEAR WORK REG FOR NEXT PARM       KK
+         LTR   LR,LR              IF THIS IS END OF PARMS,           KK
+         BNP   SETKNTS             MOVE ON TO MAINLINE.              KK
+         LA    CR,1(,CR)          ELSE IT'S A COMMA, SO COUNT IT     KK
+INCR     LA    PR,1(,PR)          BUMP TO NEXT CHARACTER             KK
+         BCT   LR,NEXTCHAR        LOOP UNTIL END OF PARMS.           KK
+         B     SAVEPARM           PROCESS LAST PARM.                 KK
+PERROR   MVI   OUTLNG,LERRMSG+L'RSNPARM+4    PARAMETER ERROR--       KK
+         MVC   OUTRSN(L'RSNPARM),RSNPARM      TERMINATE PROCESSING.
+         MVI   RC,RCPARM
+         B     PRTERM
+SETKNTS  CVD   RA0,DTEMP
+         OI    TEMPSIGN,UNSIGN    EDIT OPTION 1 VALUE TO
+         UNPK  EDOPT1,DTEMP        HEADER CAPTION.
+         MVC   EDOPT2,=C' ALL '   SET OPTION 2 TENTATIVELY TO 'ALL',
+         LTR   RA1,RA1             BUT IF A VALUE WAS SPECIFIED,
+         BNP   NOOPT2ED            EDIT IT IN OVER 'ALL'.            KK
+         CVD   RA1,DTEMP
+         OI    TEMPSIGN,UNSIGN
+         UNPK  EDOPT2,DTEMP
+         LTR   RA0,RA0            IF FIRST TWO PARMS BOTH SPECIFIED, KK
+         BZ    NOOPT2ED            THEN MAKE ADJUSTMENT FOR PRINTING OF
+         LA    RA1,1(RA1)          FIRST NULL TAPEMARK MESSAGE.
+NOOPT2ED CVD   RA2,DTEMP                                             KK
+         OI    TEMPSIGN,UNSIGN    EDIT OPTION 3 VALUE                KK
+         UNPK  EDOPT3,DTEMP                                          KK
+         USING PSA,R0                     (HE ORIGINALLY USED THE    KK
+         L     WK1,PSATOLD        A(TCB)  OLD CVT->IEATCBP SEQUENCE; KK
+         DROP  R0                         THIS SAVES 2 INSTRUCTIONS) KK
+         USING TCB,WK1                                               KK
+         L     TR,TCBTIO          A(TIOT)                            KK
+         DROP  WK1                                                   KK
+         USING TIOT1,TR                                              KK
+DDLOOP   SLR   WK1,WK1            SEARCH TIOT FOR DD CARD,           KK
+         ICM   WK1,1,TIOELNGH      AND IF NONE, INDICATE ERROR.      KK
+         BNZ   TESTDDNM                                              KK
+         MVI   OUTLNG,LERRMSG+L'RSNDD+4
+         MVC   OUTRSN(L'RSNDD),RSNDD
+         MVI   RC,RCDD
+         B     PRTERM
+TESTDDNM CLC   TIOEDDNM,=CL8'VOLUME'
+         BE    DDFOUND            LOOK AT EACH DD CARD IN TURN, UNTIL
+         AR    TR,WK1              'VOLUME' IS FOUND.
+         B     DDLOOP
+DDFOUND  ICM   UR,7,TIOEFSRT      WHEN THE DD CARD IS FOUND, LOOK    KK
+         DROP  TR                  AT THE ALLOCATED UCB.  IF IT IS
+         USING UCBOB,UR            NOT MAG TAPE, SIGNAL AN
+         TM    UCBTBYT3,UCB3TAPE   ERROR.                            KK
+         BO    DEVOK                                                 KK
+         DROP  UR
+         MVI   OUTLNG,LERRMSG+L'RSNDEV+4
+         MVC   OUTRSN(L'RSNDEV),RSNDEV
+         MVI   RC,RCDEV
+         B     PRTERM
+DEVOK    RDJFCB TAPDCB            READ IN JOB FILE CONTROL BLOCK
+         LA    WK1,JFCB           POINT TO IT                        KK
+         USING INFMJFCB,WK1        IN ORDER TO USE DSECT             KK
+         MVC   EDVOLS,JFCBVOLS     AND SET VOLUME SERIAL IN HEADER.
+         TM    JFCBLTYP,JFCNL     UNLESS TAPE IS UNLABELED,          KK
+         BO    NOBLP1              CLEAR 'SL'
+         NI    JFCBLTYP,255-JFCSL  AND SET 'BLP'.                    KK
+         OI    JFCBLTYP,JFCBLP                                       KK
+NOBLP1   XC    JFCBFLSQ,JFCBFLSQ  IN ANY CASE, CLEAR SEQUENCE NUMBER.
+         OPEN TAPDCB,TYPE=J       ATTEMPT TO OPEN THE TAPE,
+         TM    TAPOFLGS,X'10'      AND IF NOT SUCCESSFUL,
+         BO    TAPOPEN             SIGNAL AN ERROR.
+         MVI   OUTLNG,LERRMSG+L'RSNOPEN+4
+         MVC   OUTRSN(L'RSNOPEN),RSNOPEN
+         MVI   RC,RCOPEN
+         B     PRTERM
+TAPOPEN  EQU   *
+         GETMAIN EU,LV=32760,A=GOTTEN
+         SLR   TMKTR,TMKTR        CLEAR TAPE-MARK COUNTER
+         TM    JFCBLTYP,JFCNL     UNLESS TAPE IS UNLABELED,          KK
+         BO    NOBLP2              BACKSPACE TO LOAD-POINT.
+         DROP  WK1                THROUGH WITH JFCB                  KK
+         READ  RECB1,SB,TAPDCB,BLOCK+40,20
+         WAIT  ECB=RECB1
+         NI    TAPIFLGS,X'3F'     CLEAR ERROR FLAGS WITHOUT TESTING.
+         CNTRL TAPDCB,BSM
+         NI    TAPIFLGS,X'3F'
+NOBLP2   MVI   MODES,0            CLEAR ALL FLAGS AND
+NEWDS    SLR   RKTR,RKTR           CLEAR RECORD COUNTER.
+         MVC   MINREC(2),=H'32761' PRESET MINIMUM TO MAX. VALUE + 1
+         STH   RKTR,MAXREC        CLEAR MAX. BLK. LENGTH TEMPORARY
+         STH   RKTR,RECLENG       CLEAR CURRENT BLK. LENGTH TEMPORARY
+NEWBLK   EQU   *
+         L     WK1,GOTTEN         GET ADDR OF GOTTEN INPUT BUFFER
+         READ  RECB2,SF,TAPDCB,(WK1),32760  READ MAX. LENG. BLOCK AND
+         WAIT  ECB=RECB2
+         MVC   BLOCK(80),0(WK1)    TRANSFER ONLY 80 BYTES MAX.
+         NI    TAPIFLGS,X'3F'     CLEAR ANY ERROR FLAGS
+         L     WK1,RECB2+16       A(IOB)
+         TM    12(WK1),X'01'      WAS A TAPE MARK ENCOUNTERED?
+         BO    TMFOUND            YES--BRANCH TO PROCESS
+         TM    MODES,TM2           FIRST RECORD AFTER TM?
+         BZ    NOTFIRST            NO
+         NI    MODES,ALL-TM2       YES--CLEAR DOUBLE TM SWITCH.
+         CLC   =CL4'EOV1',BLOCK    IS THIS AN EOV LABEL?
+         BNE   NOTEOV              NO--
+         OI    MODES,EOV           YES--SET EOV FOUND SWITCH
+         B     NOTFIRST
+NOTEOV   CLC   =CL4'EOF1',BLOCK    IS THIS AN EOD LABEL?
+         BNE   NOTEOD              NO--
+         OI    MODES,EOD           YES--SET EOD FOUND SWITCH.
+         B     NOTFIRST
+NOTEOD   NI    MODES,ALL-EOV-EOD   ELSE CLEAR END SWITCHES.
+NOTFIRST EQU   *
+         CR    TMKTR,RA0          HAVE WE STARTED PROCESSING YET?
+         BL    NEWBLK             NO--GO BACK TO READ.
+         USING IHADCB,WK1
+         LA    WK1,TAPDCB         A(DCB) ---> WK1
+         L     WK1,DCBIOBA        A(IOB) ---> WK1
+         DROP  WK1
+         LH    WK1,22(,WK1)       RESIDUAL COUNT FROM CSW ---> WK1
+         LCR   WK1,WK1            - RESIDUAL COUNT
+         AH    WK1,=H'32760'      32760 - RESIDUAL COUNT = BLOCK LENGTH
+         STH   WK1,RECLENG        SAVE ACTUAL LENGTH OF BLOCK
+         CH    WK1,MAXREC         IS CURRENT BLOCK LARGEST YET REC'D?
+         BNH   *+4+4              IF NOT, SKIP AROUND
+         STH   WK1,MAXREC         ELSE, STORE NEW MAXIMUM SIZE VALUE
+         CH    WK1,MINREC         IS CURRENT BLOCK SMALLEST YET REC'D?
+         BC    10,*+4+4           IF NOT, SKIP AROUND
+         STH   WK1,MINREC         ELSE, STORE NEW MINIMUM SIZE VALUE
+         LA    RKTR,1(RKTR)       UPDATE RECORD COUNTER
+         CR    RKTR,RA3           PRINTED ENOUGH RECORDS?            RS
+         BH    NEWBLK             YES--GO BACK TO READ.
+******************************************************************** KK
+*  THE FOLLOWING ACF2 CODE COMMENTED OUT BUT LEFT IN CASE WE EVER    KK
+*  WANT IT AGAIN.                           RS 7/15/81               KK
+******************************************************************** KK
+*        CLI   DATASW,C'Y'        MAY THIS USER PRINT DATA?          RS
+*        BE    PRTDATA            YES--NO NEED TO CHECK FOR LABEL    RS
+*        LA    WK1,80             ELSE, SEE IF THIS IS A LABEL       KK
+*        CH    WK1,RECLENG        IS THIS BLOCK EXACTLY 80 BYTES?    KK
+*        BNE   NEWBLK             NO--COULDN'T BE LABEL--SKIP IT     KK
+*        CLC   =CL4'VOL1',BLOCK   COMPARE                            KK
+*        BE    PRTDATA             FIRST                             KK
+*        CLC   =CL4'HDR1',BLOCK    FOUR                              KK
+*        BE    PRTDATA             BYTES                             KK
+*        CLC   =CL4'HDR2',BLOCK    OF                                KK
+*        BE    PRTDATA             BLOCK                             KK
+*        CLC   =CL4'EOV1',BLOCK    TO                                KK
+*        BE    PRTDATA             EACH                              KK
+*        CLC   =CL4'EOV2',BLOCK    OF                                KK
+*        BE    PRTDATA             THE                               KK
+*        CLC   =CL4'EOF1',BLOCK    ELEVEN                            KK
+*        BE    PRTDATA             VALID                             KK
+*        CLC   =CL4'EOF2',BLOCK    IBM                               KK
+*        BE    PRTDATA             STANDARD                          KK
+*        CLC   =CL4'UHL1',BLOCK    LABEL                             KK
+*        BE    PRTDATA             RECORD                            KK
+*        CLC   =CL4'UHL8',BLOCK    TYPES                             KK
+*        BE    PRTDATA                                               KK
+*        CLC   =CL4'UTL1',BLOCK                                      KK
+*        BE    PRTDATA                                               KK
+*        CLC   =CL4'UTL8',BLOCK                                      KK
+*        BE    PRTDATA                                               KK
+*        B     NEWBLK             BYPASS PRINTING THIS BLOCK         KK
+*PRTDATA EQU   *                  CONTINUE--FORMAT AND PRINT DATA    KK
+******************************************************************** KK
+         MVC   OUTDATA,BLOCK
+         LA    WK1,80
+         CH    WK1,RECLENG        IS BLOCK > 80 BYTES?
+         BL    *+4+4              IF SO, SKIP OVER TO PUT OUT 1ST 80
+         LH    WK1,RECLENG        ELSE, PUT OUT ALL THAT WERE READ
+         LA    WK1,45(,WK1)       + LENGTH FOR CONSTANT PART OF PRINT
+         STH   WK1,OUTAREA        LINE + 4 FOR V LENGTH FIELD
+         CVD   RKTR,DTEMP         MOVE RECORD NUMBER AND
+         OI    TEMPSIGN,UNSIGN     CAPTION TO PRINT LINE.
+         UNPK  EDRKTR,DTEMP
+         MVC   OUTCAPT(LRMSG),RMSG PRINT FIRST LINE.
+         BAL   SUBRET,PRINT
+         MVI   OUTDATA,X'F0'       TRANSLATE AND PRINT A LINE OF
+         MVC   OUTDATA+1(L'OUTDATA-1),OUTDATA  HEX ZONES.
+         NC    OUTDATA,BLOCK
+         TR    OUTDATA,ZONTAB
+         BAL   SUBRET,PRINT
+         MVI   OUTDATA,X'0F'       TRANSLATE AND PRINT A LINE OF
+         MVC   OUTDATA+1(L'OUTDATA-1),OUTDATA  HEX NUMERICS.
+         NC    OUTDATA,BLOCK
+         TR    OUTDATA,NUMTAB
+         BAL   SUBRET,PRINT
+         B     NEWBLK             THEN FETCH NEXT BLOCK.
+TMFOUND  LA    TMKTR,1(TMKTR)     TAPE-MARK WAS READ--UPDATE COUNTER.
+         CR    TMKTR,RA0          STILL TOO EARLY TO TALK?
+         BL    NOTMSG             YEAH--
+         CVD   RKTR,DTEMP         NO--EDIT COUNTERS TO
+         OI    TEMPSIGN,UNSIGN     PRINT A LINE AND
+         UNPK  EDTMRKTR,DTEMP      PRINT A TAPE-MARK
+         CVD   TMKTR,DTEMP         MESSAGE.
+         OI    TEMPSIGN,UNSIGN
+         UNPK  EDTMKTR,DTEMP
+         LH    WK1,MINREC
+         CH    WK1,=H'32761'      TEST FOR NO DATA BLOCKS READ
+         BNE   *+4+2              IF NONE READ, SKIP AROUND
+         SLR   WK1,WK1            IF SO, SET MIN BLK LENG TO ZERO
+         CVD   WK1,DTEMP
+         OI    TEMPSIGN,UNSIGN
+         UNPK  EDMINREC,DTEMP
+         LH    WK1,MAXREC
+         CVD   WK1,DTEMP
+         OI    TEMPSIGN,UNSIGN
+         UNPK  EDMAXREC,DTEMP
+         MVC   OUTREC(LTMMSG),TMMSG
+         MVI   OUTLNG,LTMMSG+4
+         BAL   SUBRET,PRINT
+         BCT   RA1,NOTMSG         TEST FOR END-OF-COUNT.
+         MVI   OUTLNG,LERRMSG+4+L'RSNSATIS
+         MVC   OUTRSN(L'RSNSATIS),RSNSATIS
+         MVI   RC,RCSATIS         IF SATISFIED, PRINT A MESSAGE
+         B     PRTERM              AND STOP
+NOTMSG   CLR   TMKTR,RA2          IF MINIMUM NOT YET REACHED,        KK
+         BL    TMOK                KEEP GOING EVEN PAST EOD          KK
+         TM    MODES,EOV          EOV SWITCH SET?
+         BO    EOVMSG              YES-EXIT.                         KK
+         TM    MODES,TM2          DOUBLE TM ENCOUNTERED?
+         BO    EOVMSG              YES--ASSUME EOD.                  KK
+TMOK     EQU   *
+         OI    MODES,TM2          NOTE THAT LAST RECORD WAS A TM.
+         B     NEWDS
+EOVMSG   MVI   OUTLNG,LERRMSG+LEOV+4         SET UP EOV MESSAGE.
+         CVD   TMKTR,DTEMP
+         OI    TEMPSIGN,UNSIGN
+         UNPK  EOVKNT,DTEMP
+         MVC   OUTRSN(LEOV),RSNEOV
+         MVI   RC,RCEOV
+PRTERM   MVC   OUTERR,ERRMSG      PRINT TERMINATION
+         BAL   SUBRET,PRINT        REASON--
+         CLOSE TAPDCB
+EXIT     EQU   *
+         L     WK1,GOTTEN
+         LTR   WK1,WK1            WAS MAIN STORAGE ACTUALLY GOTTEN?
+         BZ    NOFREEMN           IF NOT, DO NOT FREE IT
+         FREEMAIN E,LV=32760,A=GOTTEN
+NOFREEMN EQU   *
+         SLR   R15,R15            SET
+         IC    R15,RC             RC AND EXIT.
+         L     R13,SAVE+4         NORMAL RETURN SEQUENCE             KK
+         L     R14,12(,R13)        (WITH RETURN CODE ALREADY IN      KK
+         LM    R0,R12,20(R13)      R15), REPLACING THE UNCCC "EXIT"  KK
+         BR    R14                 MACRO                             KK
+         SPACE 2                                                     KK
+EJECT    AP    PNO,=P'1'          UPDATE PAGE NUMBER AND EDIT TO
+         UNPK  EDPAGE,PNO          HEADER LINE.
+         OI    EDPAGE+L'EDPAGE-1,C'0'
+         ZAP   LNO,=P'55'         RESET LINE COUNTER TO MAXIMUM.
+         MVC   PRTLRECL,HEADER
+         PUT   PRINTER,HEADER     PRINT HEADER LINE
+         MVC   PRTLRECL,SPMSG      AND SKIP 2
+         PUT   PRINTER,SPMSG
+         BR    SUBRET2
+PRINT    CLI   OUTREC,C' '
+         BE    L1
+         CLI   OUTREC,C'0'
+         BE    L2
+L3       SP    LNO,=P'1'
+L2       SP    LNO,=P'1'
+L1       SP    LNO,=P'1'
+         BH    PUT
+         BAL   SUBRET2,EJECT
+PUT      MVC   PRTLRECL,OUTAREA
+         PUT   PRINTER,OUTAREA
+         MVI   OUTASA,C' '         CLEAR PRINTER LINE TO BLANKS.
+         MVC   OUTLINE,OUTASA
+         BR    SUBRET
+         USING IHADCB,R1          PRINTER DCB
+SETBLK   NC    DCBBLKSI,DCBBLKSI   EXIT ROUTINE.
+         BCR   7,R14              SET DEFAULT BLOCKSIZE
+         MVC   DCBBLKSI,=H'1632'   TO 1632.
+         BR    R14
+         DROP  R1
+         EJECT
+HEADER   DC    Y(LHEADER,0)
+       DC C'1                TAPE PRECIS UTILITY--OPTIONS:  SKIP '   KK
+EDOPT1   DC    C'?????',C', PROCESS '
+EDOPT2   DC    C'?????',C', AT LEAST '                               KK
+EDOPT3   DC    C'?????',C'. VOLUME '                                 KK
+EDVOLS   DC    C'??????',C', PAGE '
+EDPAGE   DC     C'NNNNN',C'.'
+LHEADER  EQU   *-HEADER
+         SPACE 2
+TMMSG    DC    C'0TAPE MARK # '
+EDTMKTR  DC    C'XXXXX',C' ENCOUNTERED AFTER '
+EDTMRKTR DC    C'NNNNNN',C' DATA BLOCKS '
+         DC    C'- SMALLEST BLOCK READ WAS '
+EDMINREC DC    C'NNNNN',C' BYTES - LARGEST WAS '
+EDMAXREC DC    C'NNNNN',C' BYTES.'
+LTMMSG   EQU   *-TMMSG
+         SPACE 2
+SPMSG    DC    Y(LSPMSG,0),CL10'0'
+LSPMSG   EQU   *-SPMSG
+         SPACE 2
+RMSG     DC    C'0               DATA BLOCK # '
+EDRKTR   DC    C'NNNN',C':       '
+LRMSG    EQU   *-RMSG
+         SPACE 2
+ERRMSG   DC    C'-********  REQUEST TERMINATED--'
+LERRMSG  EQU   *-ERRMSG
+         SPACE 2
+RSNPARM  DC    C'INVALID PARAMETERS.'
+RSNDD    DC    C'''VOLUME'' DD CARD NOT SUPPLIED.'
+RSNDEV   DC    C'THE ALLOCATED DEVICE IS NOT MAGNETIC TAPE.'
+RSNOPEN  DC    C'CANNOT OPEN THIS VOLUME FOR PROCESSING.'
+RSNEOV   DC    C'END-OF-VOLUME HAS BEEN REACHED AFTER '
+EOVKNT   DC    C'NNNNN',C' TAPE MARKS.'
+LEOV     EQU   *-RSNEOV
+RSNSATIS DC    C'PROCESS OPTION HAS BEEN SATISFIED.'
+BLOCK    DC    XL80'0'            INPUT AREA--
+         SPACE 3
+OUTAREA  DC    F'0'               SPACE FOR BUILDING OUTPUT RECORDS--
+OUTLNG   EQU   OUTAREA+1          VB LENGTH FIELD, FOR MVI.
+OUTREC   DS    0CL121             LINE TO BE FILLED
+OUTASA   DS    CL1                CARRIAGE CONTROL FIELD
+OUTLINE  DS    CL120              FOR CLEARING PURPOSES
+         ORG   OUTREC
+OUTCAPT  DS    CL41               CAPTION ON DATA RECORD
+OUTDATA  DS    CL80               ACTUAL INPUT RECORD DATA
+         ORG   OUTREC
+OUTERR   DS    CL(LERRMSG)        ERROR MESSAGE--CONSTANT CAPTION
+OUTRSN   DS    CL(121-LERRMSG)                   AND REASON.
+SAVE     DS    18F                SAVE AREA
+GOTTEN   DC    1F'0'              ADDRESS OF GETMAINED 32760 BYTE AREA
+MINREC   DS    1H                 LENGTH OF MINIMUM BLODK ENCOUNTERED
+MAXREC   DS    1H                 LENGTH OF MAXIMUM BLOCK ENCOUNTERED
+RECLENG  DS    1H                 LENGTH OF CURRENT BLOCK
+EXLSTT   DC    0F'0',XL1'87',AL3(JFCB)
+EXLSTP   DC    0F'0',XL1'85',AL3(SETBLK)
+PRINTER DCB    DSORG=PS,MACRF=PM,DDNAME=SYSPRINT,                      *
+               RECFM=VBA,LRECL=125,                                    *
+               EXLST=EXLSTP
+TAPDCB   DCB   DSORG=PS,MACRF=RC,DDNAME=VOLUME,                        *
+               RECFM=U,BLKSIZE=32760,OPTCD=Z,                          *
+               EXLST=EXLSTT
+RC       DS    FL1                RETURN CODE
+LNO      DS    PL2                LINE COUNTER
+PNO      DS    PL3                PAGE COUNTER
+*DATASW  DS    CL1                WHETHER TO PRINT TAPE DATA         RS
+MODES    DS    BL1                FLAG BITS.
+ALL      EQU   X'FF'
+TM2      EQU   X'80'
+EOV      EQU   X'40'
+EOD      EQU   X'20'
+QUESTION DC    6C'?'
+NUMTAB   DC    C'0123456789ABCDEF'
+         DC    CL16'1',CL16'2',CL16'3',CL16'4',CL16'5',CL16'6',CL16'7'
+         DC    CL16'8',CL16'9',CL16'A',CL16'B',CL16'C',CL16'D',CL16'E'
+         DC    C'F'
+ZONTAB   EQU   NUMTAB
+DTEMP    DS    D
+TEMPSIGN EQU   DTEMP+7
+JFCB     DS    0D,CL176           RDJFCB READS JFCB INTO HERE        KK
+UNSIGN   EQU   X'F'
+R0       EQU   0                                                     KK
+R1       EQU   1                                                     KK
+R2       EQU   2                                                     KK
+R3       EQU   3                                                     KK
+R4       EQU   4                                                     KK
+R5       EQU   5                                                     KK
+R6       EQU   6                                                     KK
+R7       EQU   7                                                     KK
+R8       EQU   8                                                     KK
+R9       EQU   9                                                     KK
+R10      EQU   10                                                    KK
+R11      EQU   11                                                    KK
+R12      EQU   12                                                    KK
+R13      EQU   13                                                    KK
+R14      EQU   14                                                    KK
+R15      EQU   15                                                    KK
+BR       EQU   12
+PR       EQU   11
+TR       EQU   11
+UR       EQU   11
+TMKTR    EQU   11
+LR       EQU   10
+RKTR     EQU   10
+RA2      EQU   9                                                     KK
+RA1      EQU   8                                                     KK
+RA0      EQU   7                                                     KK
+WK1      EQU   6                                                     KK
+SUBRET2  EQU   6                                                     KK
+SUBRET   EQU   5                                                     KK
+CR       EQU   5                                                     KK
+RA3      EQU   4                                                     RS
+         SPACE 2
+         LTORG
+         SPACE 2
+PARMS    DSECT
+PARMLNG  DS    H
+PCHAR    DS    C
+         PRINT NOGEN                                                 KK
+         DCBD  DSORG=PS,DEVD=TA
+POFLGS   EQU   DCBOFLGS-IHADCB+PRINTER
+TAPOFLGS EQU   DCBOFLGS-IHADCB+TAPDCB
+TAPIFLGS EQU   DCBIFLGS-IHADCB+TAPDCB
+PRTLRECL EQU   DCBLRECL-IHADCB+PRINTER
+         IKJTCB ,                 TASK CONTROL BLOCK                 KK
+TIODSECT DSECT                                                       KK
+         IEFTIOT1 ,               TASK INPUT-OUTPUT TABLE            KK
+UCBDSECT DSECT                                                       KK
+         IEFUCBOB ,               UNIT CONTROL BLOCK                 KK
+JFCDSECT DSECT                                                       KK
+         IEFJFCBN ,               JOB FILE CONTROL BLOCK             KK
+         IHAPSA ,                 PREFIXED STORAGE AREA              KK
+*        IHAASCB ,                ADDRESS SPACE CONTROL BLOCK        KK
+*        ACCVT                    ACF2 CVT                           KK
+*        ACFASVT                  ACF2 ADDRESS SPACE VECTOR TABLE    KK
+*        ACUCB                    ACF2 USER CONTROL BLOCK            KK
+*        LIDREC                   ACF2 LOGONID RECORD                KK
+         END
